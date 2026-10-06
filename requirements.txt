@@ -7,5 +7,6 @@ opencv-python-headless
 numpy
 deepface
 tensorflow
+tf-keras
 reportlab
 av
