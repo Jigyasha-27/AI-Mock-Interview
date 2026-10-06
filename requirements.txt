@@ -1,1 +1,11 @@
-
+streamlit
+SpeechRecognition
+streamlit-webrtc
+pypdf
+python-docx
+opencv-python-headless
+numpy
+deepface
+tensorflow
+reportlab
+av
