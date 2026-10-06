@@ -3,6 +3,9 @@ import speech_recognition as sr
 import tempfile
 import os
 import subprocess
+import shutil
+import shutil
+import shutil
 import random
 import hashlib
 import time
@@ -162,10 +165,13 @@ st.markdown("""
 # CONSTANTS
 # =========================================================
 
-FFMPEG_PATH = (
-    r"C:\Users\Nitin\Downloads\ffmpeg-9.0.2-essentials_build"
-    r"\ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe"
-)
+FFMPEG_PATH = shutil.which("ffmpeg")
+
+if not FFMPEG_PATH and os.name == "nt":
+    FFMPEG_PATH = shutil.which("ffmpeg")
+
+if not FFMPEG_PATH:
+    raise RuntimeError("FFmpeg is not available in the system PATH.")
 
 HAAR_CASCADE_PATH = os.path.join(
     os.path.dirname(__file__),
