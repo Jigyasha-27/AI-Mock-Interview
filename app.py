@@ -1572,17 +1572,21 @@ def speak_question(text):
 # FACE DETECTOR
 # =========================================================
 
-if os.path.exists(HAAR_CASCADE_PATH):
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-    face_detector = cv2.CascadeClassifier(
-        HAAR_CASCADE_PATH
-    )
+HAAR_CASCADE_PATH = os.path.join(
+    BASE_DIR,
+    "models",
+    "haarcascade_frontalface_default.xml"
+)
 
-else:
+face_detector = cv2.CascadeClassifier(
+    HAAR_CASCADE_PATH
+)
 
-    face_detector = cv2.CascadeClassifier(
-        cv2.data.haarcascades +
-        "haarcascade_frontalface_default.xml"
+if face_detector.empty():
+    raise RuntimeError(
+        f"Could not load Haar Cascade file: {HAAR_CASCADE_PATH}"
     )
 
 
