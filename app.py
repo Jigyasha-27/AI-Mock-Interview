@@ -1589,128 +1589,142 @@ def generate_hybrid_questions(
     role_count
 ):
 
+    api_key = st.secrets.get("GEMINI_API_KEY", "")
+
+    if not api_key:
+        return None, "Gemini API key not found."
+
+    if not resume_text or not resume_text.strip():
+        return None, "Please upload a valid resume."
+
+    prompt = f"""
+    You are an experienced technical interviewer.
+
+    Candidate's selected role: {role}
+    Interview type: {interview_type}
+    Difficulty: {difficulty}
+
+    CANDIDATE RESUME:
+    {resume_text[:12000]}
+
+    PART 1: RESUME-BASED QUESTIONS
+
+    Generate exactly {resume_count} questions using ONLY
+    information explicitly present in the candidate's resume.
+
+    Carefully identify and use these resume sections:
+
+    1. Subjects and academic concepts mentioned.
+    2. Programming languages mentioned.
+    3. Technical skills, tools and technologies.
+    4. Projects mentioned, including their objectives,
+       technologies, implementation and features.
+    5. Internships or experience, if mentioned.
+
+    Ask specific questions about these details.
+
+    Do not assume a language, subject, skill or project
+    that is not present in the resume.
+    Do not invent project features or experience.
+    Do not generate generic questions unrelated to the resume.
+
+    PART 2: ROLE-BASED QUESTIONS
+
+    Generate exactly {role_count} additional questions
+    based on the selected role: {role}.
+
+    These questions should test relevant technical knowledge
+    and must not repeat the resume-based questions.
+
+    Return only valid JSON in this exact structure:
+
+    {{
+        "resume_questions": [],
+        "role_questions": []
+    }}
+    """
+
     try:
-        print("GEMINI FUNCTION CALLED")
-        api_key = st.secrets.get("GEMINI_API_KEY", "")
-
-        if not api_key:
-            return None, "Gemini API key not found."
-
         client = genai.Client(api_key=api_key)
-        print("GEMINI CLIENT CREATED")
 
-        
-        prompt = f"""
-        You are an experienced technical interviewer.
+        for attempt in range(3):
+            try:
+                print(f"GEMINI ATTEMPT: {attempt + 1}")
 
-        Candidate's selected role: {role}
-        Interview type: {interview_type}
-        Difficulty: {difficulty}
+                response = client.models.generate_content(
+                    model="gemini-3.8-flash",
+                    contents=prompt
+                )
 
-        CANDIDATE RESUME:
-        {resume_text[:12000]}
+                if not response.text:
+                    raise ValueError("Gemini returned an empty response.")
 
-        PART 1: RESUME-BASED QUESTIONS
+                response_text = response.text.strip()
 
-        Generate exactly {resume_count} questions using ONLY
-        information explicitly present in the candidate's resume.
+                response_text = re.sub(
+                    r"^```(?:json)?\s*|\s*```$",
+                    "",
+                    response_text,
+                    flags=re.IGNORECASE
+                )
 
-        Carefully identify and use these resume sections:
+                data = json.loads(response_text)
 
-        1. Subjects and academic concepts mentioned.
-        2. Programming languages mentioned.
-        3. Technical skills, tools and technologies.
-        4. Projects mentioned, including their objectives,
-           technologies, implementation and features.
-        5. Internships or experience, if mentioned.
+                resume_questions = data.get("resume_questions", [])
+                role_questions = data.get("role_questions", [])
 
-        Ask specific questions about these details.
+                if not isinstance(resume_questions, list):
+                    return None, "Invalid resume questions format."
 
-        Examples:
-        - If C++ is mentioned, ask about C++ concepts.
-        - If Python is mentioned, ask Python-related questions.
-        - If DBMS is mentioned, ask DBMS-related questions.
-        - If a project is mentioned, ask about its working,
-          technologies, implementation and challenges.
+                if not isinstance(role_questions, list):
+                    return None, "Invalid role questions format."
 
-        Do not assume a language, subject, skill or project
-        that is not present in the resume.
-        Do not invent project features or experience.
-        Do not generate generic questions unrelated to the resume.
+                resume_questions = [
+                    q.strip() for q in resume_questions
+                    if isinstance(q, str) and q.strip()
+                ]
 
-        PART 2: ROLE-BASED QUESTIONS
+                role_questions = [
+                    q.strip() for q in role_questions
+                    if isinstance(q, str) and q.strip()
+                ]
 
-        Generate exactly {role_count} additional questions
-        based on the selected role: {role}.
+                if len(resume_questions) < resume_count:
+                    return None, "Gemini generated insufficient resume questions."
 
-        These questions should test relevant technical knowledge
-        and must not repeat the resume-based questions.
+                if len(role_questions) < role_count:
+                    return None, "Gemini generated insufficient role questions."
 
-        Return only valid JSON in this exact structure:
+                print("GEMINI QUESTIONS GENERATED SUCCESSFULLY")
 
-        {{
-            "resume_questions": [],
-            "role_questions": []
-        }}
-        """
+                return {
+                    "resume_questions": resume_questions[:resume_count],
+                    "role_questions": role_questions[:role_count]
+                }, None
 
+            except Exception as e:
+                error_text = str(e).lower()
 
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt
-        )
+                temporary_error = any(
+                    code in error_text
+                    for code in ["503", "429", "500", "502", "504",
+                                 "unavailable", "high demand", "overloaded"]
+                )
 
-        print("GEMINI RESPONSE RECEIVED")
-        print(response.text)
-        response_text = response.text.strip()
+                print("GEMINI ERROR:", repr(e))
 
-        response_text = re.sub(
-            r"^```(?:json)?\s*|\s*```$",
-            "",
-            response_text,
-            flags=re.IGNORECASE
-        )
+                if temporary_error and attempt < 2:
+                    wait_time = 2 ** (attempt + 1)
+                    print(f"Retrying Gemini in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                    continue
 
-        data = json.loads(response_text)
-
-        resume_questions = data.get(
-            "resume_questions", []
-        )
-
-        role_questions = data.get(
-            "role_questions", []
-        )
-
-        if not isinstance(resume_questions, list):
-            return None, "Invalid resume questions."
-
-        if not isinstance(role_questions, list):
-            return None, "Invalid role questions."
-
-        resume_questions = [
-            q.strip() for q in resume_questions
-            if isinstance(q, str) and q.strip()
-        ]
-
-        role_questions = [
-            q.strip() for q in role_questions
-            if isinstance(q, str) and q.strip()
-        ]
-
-        if len(resume_questions) < resume_count:
-            return None, "Not enough resume questions."
-
-        if len(role_questions) < role_count:
-            return None, "Not enough role questions."
-
-        return {
-            "resume_questions": resume_questions[:resume_count],
-            "role_questions": role_questions[:role_count]
-        }, None
+                return None, str(e)
 
     except Exception as e:
-        print("GEMINI ERROR:", repr(e))
+        print("GEMINI CLIENT ERROR:", repr(e))
         return None, str(e)
+
 # =========================================================
 # QUESTION SPEECH
 # =========================================================
