@@ -164,19 +164,23 @@ st.markdown("""
 # CONSTANTS
 # =========================================================
 
-FFMPEG_PATH = os.path.join(
-    os.path.expanduser("~"),
-    "Downloads",
-    "ffmpeg-9.0.2-essentials_build",
-    "ffmpeg-9.0.2-essentials_build",
-    "bin",
-    "ffmpeg.exe"
-)
+FFMPEG_PATH = shutil.which("ffmpeg")
 
-if not os.path.isfile(FFMPEG_PATH):
-    raise RuntimeError(
-        f"FFmpeg not found at: {FFMPEG_PATH}"
+if not FFMPEG_PATH:
+    windows_ffmpeg_path = os.path.join(
+        os.path.expanduser("~"),
+        "Downloads",
+        "ffmpeg-9.0.2-essentials_build",
+        "ffmpeg-9.0.2-essentials_build",
+        "bin",
+        "ffmpeg.exe"
     )
+
+    if os.path.isfile(windows_ffmpeg_path):
+        FFMPEG_PATH = windows_ffmpeg_path
+
+if not FFMPEG_PATH:
+    raise RuntimeError("FFmpeg not found. Please install FFmpeg.")
 
 
 HAAR_CASCADE_PATH = os.path.join(
