@@ -4,12 +4,11 @@ import tempfile
 import os
 import subprocess
 import shutil
-import shutil
-import shutil
 import random
 import hashlib
 import time
 import re
+import json
 import wave
 from collections import Counter
 from datetime import datetime
@@ -23,7 +22,7 @@ from streamlit_webrtc import webrtc_streamer
 from pypdf import PdfReader
 from docx import Document
 from deepface import DeepFace
-
+from google import genai
 
 # =========================================================
 # OPTIONAL PDF LIBRARY
@@ -165,13 +164,20 @@ st.markdown("""
 # CONSTANTS
 # =========================================================
 
-FFMPEG_PATH = shutil.which("ffmpeg")
+FFMPEG_PATH = os.path.join(
+    os.path.expanduser("~"),
+    "Downloads",
+    "ffmpeg-9.0.2-essentials_build",
+    "ffmpeg-9.0.2-essentials_build",
+    "bin",
+    "ffmpeg.exe"
+)
 
-if not FFMPEG_PATH and os.name == "nt":
-    FFMPEG_PATH = shutil.which("ffmpeg")
+if not os.path.isfile(FFMPEG_PATH):
+    raise RuntimeError(
+        f"FFmpeg not found at: {FFMPEG_PATH}"
+    )
 
-if not FFMPEG_PATH:
-    raise RuntimeError("FFmpeg is not available in the system PATH.")
 
 HAAR_CASCADE_PATH = os.path.join(
     os.path.dirname(__file__),
@@ -1482,6 +1488,9 @@ for key, value in DEFAULTS.items():
 # =========================================================
 
 def reset_interview():
+    saved_resume_text = st.session_state.get("resume_text", "")
+    saved_resume_name = st.session_state.get("resume_name", "")
+
 
     for key, value in DEFAULTS.items():
 
@@ -1493,6 +1502,8 @@ def reset_interview():
 
         else:
             st.session_state[key] = value
+    st.session_state.resume_text = saved_resume_text
+    st.session_state.resume_name = saved_resume_name
 
 
 # =========================================================
@@ -1508,6 +1519,7 @@ def extract_resume_text(uploaded_file):
 
         filename = uploaded_file.name.lower()
 
+        # PDF FILE
         if filename.endswith(".pdf"):
 
             reader = PdfReader(uploaded_file)
@@ -1515,38 +1527,186 @@ def extract_resume_text(uploaded_file):
             text = ""
 
             for page in reader.pages:
-
                 page_text = page.extract_text() or ""
-
                 text += page_text + "\n"
+
+            print("PDF PAGES:", len(reader.pages))
+            print("EXTRACTED TEXT LENGTH:", len(text.strip()))
+            print("EXTRACTED TEXT PREVIEW:", repr(text[:500]))
 
             return text.strip()
 
+        # DOCX FILE
         elif filename.endswith(".docx"):
 
             document = Document(uploaded_file)
 
-            return "\n".join(
+            text = "\n".join(
                 paragraph.text
                 for paragraph in document.paragraphs
-            ).strip()
+            )
 
+            print("DOCX TEXT LENGTH:", len(text.strip()))
+
+            return text.strip()
+
+        # TXT FILE
         elif filename.endswith(".txt"):
 
-            return uploaded_file.read().decode(
+            text = uploaded_file.read().decode(
                 "utf-8",
                 errors="ignore"
             )
+
+            print("TXT TEXT LENGTH:", len(text.strip()))
+
+            return text.strip()
 
         return ""
 
     except Exception as e:
 
+        print("RESUME EXTRACTION ERROR:", repr(e))
         st.error(f"Could not read resume: {e}")
 
         return ""
 
 
+# =========================================================
+# GEMINI RESUME + ROLE BASED QUESTIONS
+# =========================================================
+
+def generate_hybrid_questions(
+    resume_text,
+    role,
+    interview_type,
+    difficulty,
+    resume_count,
+    role_count
+):
+
+    try:
+        print("GEMINI FUNCTION CALLED")
+        api_key = st.secrets.get("GEMINI_API_KEY", "")
+
+        if not api_key:
+            return None, "Gemini API key not found."
+
+        client = genai.Client(api_key=api_key)
+        print("GEMINI CLIENT CREATED")
+
+        
+        prompt = f"""
+        You are an experienced technical interviewer.
+
+        Candidate's selected role: {role}
+        Interview type: {interview_type}
+        Difficulty: {difficulty}
+
+        CANDIDATE RESUME:
+        {resume_text[:12000]}
+
+        PART 1: RESUME-BASED QUESTIONS
+
+        Generate exactly {resume_count} questions using ONLY
+        information explicitly present in the candidate's resume.
+
+        Carefully identify and use these resume sections:
+
+        1. Subjects and academic concepts mentioned.
+        2. Programming languages mentioned.
+        3. Technical skills, tools and technologies.
+        4. Projects mentioned, including their objectives,
+           technologies, implementation and features.
+        5. Internships or experience, if mentioned.
+
+        Ask specific questions about these details.
+
+        Examples:
+        - If C++ is mentioned, ask about C++ concepts.
+        - If Python is mentioned, ask Python-related questions.
+        - If DBMS is mentioned, ask DBMS-related questions.
+        - If a project is mentioned, ask about its working,
+          technologies, implementation and challenges.
+
+        Do not assume a language, subject, skill or project
+        that is not present in the resume.
+        Do not invent project features or experience.
+        Do not generate generic questions unrelated to the resume.
+
+        PART 2: ROLE-BASED QUESTIONS
+
+        Generate exactly {role_count} additional questions
+        based on the selected role: {role}.
+
+        These questions should test relevant technical knowledge
+        and must not repeat the resume-based questions.
+
+        Return only valid JSON in this exact structure:
+
+        {{
+            "resume_questions": [],
+            "role_questions": []
+        }}
+        """
+
+
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=prompt
+        )
+
+        print("GEMINI RESPONSE RECEIVED")
+        print(response.text)
+        response_text = response.text.strip()
+
+        response_text = re.sub(
+            r"^```(?:json)?\s*|\s*```$",
+            "",
+            response_text,
+            flags=re.IGNORECASE
+        )
+
+        data = json.loads(response_text)
+
+        resume_questions = data.get(
+            "resume_questions", []
+        )
+
+        role_questions = data.get(
+            "role_questions", []
+        )
+
+        if not isinstance(resume_questions, list):
+            return None, "Invalid resume questions."
+
+        if not isinstance(role_questions, list):
+            return None, "Invalid role questions."
+
+        resume_questions = [
+            q.strip() for q in resume_questions
+            if isinstance(q, str) and q.strip()
+        ]
+
+        role_questions = [
+            q.strip() for q in role_questions
+            if isinstance(q, str) and q.strip()
+        ]
+
+        if len(resume_questions) < resume_count:
+            return None, "Not enough resume questions."
+
+        if len(role_questions) < role_count:
+            return None, "Not enough role questions."
+
+        return {
+            "resume_questions": resume_questions[:resume_count],
+            "role_questions": role_questions[:role_count]
+        }, None
+
+    except Exception as e:
+        print("GEMINI ERROR:", repr(e))
+        return None, str(e)
 # =========================================================
 # QUESTION SPEECH
 # =========================================================
@@ -3569,21 +3729,26 @@ with st.sidebar:
 
     if uploaded_resume is not None:
 
-        if st.session_state.resume_name != uploaded_resume.name:
+        if (
+            st.session_state.resume_name != uploaded_resume.name
+            or not st.session_state.resume_text
+        ):
 
-            st.session_state.resume_text = (
-                extract_resume_text(
-                    uploaded_resume
-                )
+            st.session_state.resume_text = extract_resume_text(
+                uploaded_resume
             )
 
-            st.session_state.resume_name = (
-                uploaded_resume.name
-            )
+            st.session_state.resume_name = uploaded_resume.name
 
-        st.success(
-            f"Resume loaded: {uploaded_resume.name}"
-        )
+        if st.session_state.resume_text:
+            st.success(
+                f"Resume loaded: {uploaded_resume.name}"
+            )
+        else:
+            st.warning(
+                "Resume text could not be extracted. "
+                "Please upload a text-based PDF, DOCX or TXT file."
+            )
 
     st.divider()
 
@@ -3595,8 +3760,6 @@ with st.sidebar:
         reset_interview()
 
         st.rerun()
-
-
 # =========================================================
 # FINISHED REPORT
 # =========================================================
@@ -4193,6 +4356,12 @@ if st.session_state.finished:
 
 if st.session_state.started:
 
+    st.write("DEBUG Resume:", st.session_state.get("debug_resume_count", 0))
+    st.write("DEBUG Role:", st.session_state.get("debug_role_count", 0))
+    st.write("DEBUG Total:", st.session_state.get("debug_total_count", 0))
+    if st.session_state.get("gemini_error"):
+        st.error("Gemini Error: " + st.session_state.gemini_error)
+
     # =====================================================
     # CAMERA
     # =====================================================
@@ -4419,14 +4588,13 @@ if st.session_state.started:
     )
 
     if audio_value is not None:
+        audio_bytes = audio_value.getvalue()
 
-        audio_bytes = (
-            audio_value.getvalue()
-        )
+        print("AUDIO SIZE:", len(audio_bytes), "bytes")
+        st.write("Audio received:", len(audio_bytes), "bytes")
+        st.audio(audio_bytes)
 
-        audio_hash = hashlib.md5(
-            audio_bytes
-        ).hexdigest()
+        audio_hash = hashlib.md5(audio_bytes).hexdigest()
 
         if (
             st.session_state.last_processed_audio_hash.get(
@@ -5118,20 +5286,11 @@ st.caption(
 # =========================================================
 # NUMBER OF QUESTIONS
 # =========================================================
-
-question_count = st.slider(
+question_count = st.select_slider(
     "Number of questions",
-    min_value=3,
-    max_value=min(
-        10,
-        len(preview_questions)
-    ),
-    value=min(
-        5,
-        len(preview_questions)
-    )
+    options=[5, 10, 15],
+    value=15
 )
-
 
 # =========================================================
 # START INTERVIEW
@@ -5145,31 +5304,88 @@ if st.button(
 
     reset_interview()
 
-    selected_questions = random.sample(
-        preview_questions,
-        question_count
+    print("START BUTTON CLICKED")
+    print(
+        "RESUME TEXT LENGTH:",
+        len(st.session_state.get("resume_text", ""))
     )
 
-    st.session_state.questions = (
-        selected_questions
-    )
+    selected_questions = []
+    if st.session_state.resume_text:
+
+        resume_count = question_count // 2
+        role_count = question_count - resume_count
+
+        with st.spinner(
+            "Generating your personalized interview questions..."
+        ):
+
+            generated_data, generation_error = (
+                generate_hybrid_questions(
+                    resume_text=st.session_state.resume_text,
+                    role=role,
+                    interview_type=interview_type,
+                    difficulty=difficulty,
+                    resume_count=resume_count,
+                    role_count=role_count
+                )
+            )
+
+        if generated_data:
+
+            st.write("DEBUG - Resume Questions:", len(generated_data["resume_questions"]))
+            st.write("DEBUG - Role Questions:", len(generated_data["role_questions"]))
+            st.session_state.debug_resume_count = len(generated_data["resume_questions"])
+            st.session_state.debug_role_count = len(generated_data["role_questions"])
+
+            selected_questions = (
+                generated_data["resume_questions"]
+                + generated_data["role_questions"]
+            )
+
+            random.shuffle(selected_questions)
+            st.session_state.gemini_error = ""
+
+            st.success(
+                "Resume-based and role-based questions generated!"
+            )
+
+        else:
+
+            st.warning(
+                f"Gemini generation failed: {generation_error}. "
+                "Using existing role-based questions."
+            )
+
+            st.error(f"Gemini Error Details: {generation_error}")
+            st.session_state.gemini_error = str(generation_error)
+
+            selected_questions = random.sample(
+                preview_questions,
+                min(question_count, len(preview_questions))
+            )
+
+    else:
+
+        selected_questions = random.sample(
+            preview_questions,
+            min(question_count, len(preview_questions))
+        )
+
+    if not selected_questions:
+        st.error("No questions available.")
+        st.stop()
+
+    st.session_state.questions = selected_questions
+    st.session_state.debug_total_count = len(selected_questions)
 
     st.session_state.role = role
-
-    st.session_state.difficulty = (
-        difficulty
-    )
-
-    st.session_state.interview_type = (
-        interview_type
-    )
+    st.session_state.difficulty = difficulty
+    st.session_state.interview_type = interview_type
 
     st.session_state.started = True
-
     st.session_state.finished = False
 
-    st.session_state.interview_start_time = (
-        time.time()
-    )
+    st.session_state.interview_start_time = time.time()
 
     st.rerun()

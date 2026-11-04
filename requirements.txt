@@ -11,3 +11,4 @@ tensorflow
 tf-keras
 reportlab
 av
+google-genai
